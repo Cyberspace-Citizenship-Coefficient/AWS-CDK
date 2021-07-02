@@ -1,0 +1,26 @@
+{
+  "name": "cdk",
+  "version": "0.1.0",
+  "bin": {
+    "cdk": "bin/cdk.js"
+  },
+  "scripts": {
+    "build": "echo \"The build step is not required when using JavaScript!\" && exit 0",
+    "cdk": "cdk",
+    "test": "jest"
+  },
+  "devDependencies": {
+    "@aws-cdk/assert": "1.110.1",
+    "aws-cdk": "1.110.1",
+    "jest": "^26.4.2"
+  },
+  "dependencies": {
+    "@aws-cdk/aws-apigateway": "^1.110.1",
+    "@aws-cdk/aws-dynamodb": "^1.110.1",
+    "@aws-cdk/aws-iam": "^1.110.1",
+    "@aws-cdk/aws-lambda": "^1.110.1",
+    "@aws-cdk/aws-logs": "^1.110.1",
+    "@aws-cdk/aws-s3": "^1.110.1",
+    "@aws-cdk/core": "1.110.1"
+  }
+}
