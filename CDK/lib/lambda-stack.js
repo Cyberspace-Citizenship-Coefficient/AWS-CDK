@@ -2,6 +2,7 @@ const cdk = require('@aws-cdk/core');
 const s3 = require('@aws-cdk/aws-s3');
 const dynamodb = require('@aws-cdk/aws-dynamodb');
 const apigw = require('@aws-cdk/aws-apigateway');
+const sqs = require('@aws-cdk/aws-sqs');
 const iam = require('@aws-cdk/aws-iam');
 const lambda = require('@aws-cdk/aws-lambda');
 const { RestApi, MethodLoggingLevel } = require('@aws-cdk/aws-apigateway');
@@ -17,10 +18,34 @@ class LambdaApiStack extends cdk.Stack {
   constructor(scope, id, props) {
     super(scope, id, props);
 
+    // The environment or stage should be provided as a property. If you do not set the stage, then a
+    // default stage of 'dev' will be created.
+    this.stageParameter = new cdk.CfnParameter(this, 'stage', {
+      type: 'String',
+      description: 'The target environment stage (e.g., dev, test, production)',
+      default: 'alpha',
+      allowedValues: ['alpha', 'beta', 'gamma', 'prod']
+    });
+
+    console.log('stage => ' + this.stageParameter.valueAsString);
+
     this.createDynamoTables();
+    this.createQueues();
     this.createLambdaExecutionRole();
     this.createLambdaFunctions();
     this.createApi();
+  }
+
+  queueArns() {
+    return [ this.queueValidation.queueArn ];
+  }
+
+
+  createQueues() {
+    this.queueValidation = new sqs.Queue(this, "QueueValidation", {
+      queueName: this.stageParameter.valueAsString + '_ValidationQueue',
+      encryption: sqs.QueueEncryption.UNENCRYPTED
+    });
   }
 
   dynamoTableArns() {
@@ -32,6 +57,7 @@ class LambdaApiStack extends cdk.Stack {
 
   createDynamoTables() {
     this.tblDevices = new dynamodb.Table(this, 'DynamoDBDevices', {
+      tableName: this.stageParameter.valueAsString + '_devices',
       partitionKey: {
         name: 'id',
         type: dynamodb.AttributeType.STRING
@@ -42,6 +68,7 @@ class LambdaApiStack extends cdk.Stack {
     });
 
     this.tblInfractions = new dynamodb.Table(this, 'DynamoDBInfractions', {
+      tableName: this.stageParameter.valueAsString + '_infractions',
       partitionKey: {
         name: 'id',
         type: dynamodb.AttributeType.STRING
@@ -68,8 +95,9 @@ class LambdaApiStack extends cdk.Stack {
 
   createApi() {
     let api = new RestApi(this, 'RestApi', {
+      restApiName: this.stageParameter.valueAsString + '_api',
       deployOptions: {
-        stageName: "beta",
+        stageName: "prod",
         metricsEnabled: true,
         loggingLevel: MethodLoggingLevel.INFO,
         dataTraceEnabled: true,
@@ -98,12 +126,6 @@ class LambdaApiStack extends cdk.Stack {
     let reportsWallOfShame = reports.addResource('wallofshame');
     reportsWallOfShame.addMethod('GET', new apigw.LambdaIntegration(this.lambdaReportsWallOfShame, { proxy: true }));
 
-    const deployment = new apigw.Deployment(this, 'test_deployment', { api });
-    const devStage = new apigw.Stage(this, 'dev_stage', { deployment, stageName: 'dev' });
-    const prodStage = new apigw.Stage(this, 'prod_stage', { deployment, stageName: 'prod' });
-
-    api.deploymentStage = prodStage
-
     this.api = api;
   }
 
@@ -116,6 +138,7 @@ class LambdaApiStack extends cdk.Stack {
     this.initialCode = lambda.Code.fromAsset("./src");
 
     this.lambdaHelloWorld = new lambda.Function(this, 'LambdaFunction_HelloWorld', {
+      functionName: this.stageParameter.valueAsString + '_helloworld',
       handler: "index.handler",
       runtime: lambda.Runtime.NODEJS_14_X,
       code: this.initialCode,
@@ -123,6 +146,7 @@ class LambdaApiStack extends cdk.Stack {
     });
     
     this.lambdaInfractions = new lambda.Function(this, 'LambdaFunction_Infractions', {
+      functionName: this.stageParameter.valueAsString + '_infractions',
       handler: "index.handler",
       runtime: lambda.Runtime.NODEJS_14_X,
       code: this.initialCode,
@@ -134,6 +158,7 @@ class LambdaApiStack extends cdk.Stack {
     });
 
     this.lambdaInfractionTypes = new lambda.Function(this, 'LambdaFunction_InfractionTypes', {
+      functionName: this.stageParameter.valueAsString + '_infraction_types',
       handler: "index.handler",
       runtime: lambda.Runtime.NODEJS_14_X,
       code: this.initialCode,
@@ -141,6 +166,7 @@ class LambdaApiStack extends cdk.Stack {
     });
 
     this.lambdaDevices = new lambda.Function(this, 'LambdaFunction_Devices', {
+      functionName: this.stageParameter.valueAsString + '_devices',
       handler: "index.handler",
       runtime: lambda.Runtime.NODEJS_14_X,
       code: this.initialCode,
@@ -152,6 +178,7 @@ class LambdaApiStack extends cdk.Stack {
     });
 
     this.lambdaReportsWallOfShame = new lambda.Function(this, 'LambdaFunction_WallOfShame', {
+      functionName: this.stageParameter.valueAsString + '_reports_wos',
       handler: "index.handler",
       runtime: lambda.Runtime.NODEJS_14_X,
       code: this.initialCode,
@@ -180,14 +207,23 @@ class LambdaApiStack extends cdk.Stack {
       resources: this.dynamoTableArns()
     });
 
-    let dynamoReadWritePolicy = new iam.ManagedPolicy(this, 'LambdaExecutionPolicy', {
+    let dynamoReadWritePolicy = new iam.ManagedPolicy(this, 'LambdaDynamoExecutionPolicy', {
       statements: [ dynamoReadWritePolicyStatement ]
+    });
+
+    let sqsReadWritePolicyStatement = new PolicyStatement({
+      actions: ["sqs:SendMessage", "sqs:GetQueueAttributes", "sqs:ReceiveMessage", "sqs:DeleteMessage"],
+      resources: this.queueArns()
+    });
+
+    let sqsReadWritePolicy = new iam.ManagedPolicy(this, 'LambdaSQSPolicy', {
+      statements: [ sqsReadWritePolicyStatement ]
     });
 
     let lambdaExecutionRole = new iam.Role(this, 'LambdaExecutionRole', {
       assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
       description: 'Execution role for lambda',
-      managedPolicies: [ dynamoReadWritePolicy ]
+      managedPolicies: [ dynamoReadWritePolicy, sqsReadWritePolicy ]
     });
 
     this.lambdaExecutionRole = lambdaExecutionRole;
