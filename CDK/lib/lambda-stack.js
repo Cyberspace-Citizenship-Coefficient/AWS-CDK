@@ -1,10 +1,12 @@
 const cdk = require('@aws-cdk/core');
-const s3 = require('@aws-cdk/aws-s3');
 const dynamodb = require('@aws-cdk/aws-dynamodb');
 const apigw = require('@aws-cdk/aws-apigateway');
 const sqs = require('@aws-cdk/aws-sqs');
+const sns = require('@aws-cdk/aws-sns');
+const subs = require('@aws-cdk/aws-sns-subscriptions');
 const iam = require('@aws-cdk/aws-iam');
 const lambda = require('@aws-cdk/aws-lambda');
+const { SqsEventSource } = require('@aws-cdk/aws-lambda-event-sources');
 const { RestApi, MethodLoggingLevel } = require('@aws-cdk/aws-apigateway');
 const { PolicyStatement } = require('@aws-cdk/aws-iam');
 
@@ -33,6 +35,7 @@ class LambdaApiStack extends cdk.Stack {
     this.createQueues();
     this.createLambdaExecutionRole();
     this.createLambdaFunctions();
+    this.createLambdaDeploymentRole();
     this.createApi();
   }
 
@@ -40,11 +43,26 @@ class LambdaApiStack extends cdk.Stack {
     return [ this.queueValidation.queueArn ];
   }
 
-
   createQueues() {
     this.queueValidation = new sqs.Queue(this, "QueueValidation", {
       queueName: this.stageParameter.valueAsString + '_ValidationQueue',
       encryption: sqs.QueueEncryption.UNENCRYPTED
+    });
+
+    this.topicValidation = new sns.Topic(this, 'TopicValidation', {
+      topicName: this.stageParameter.valueAsString + '_ValidationTopic'
+    });
+
+    this.topicValidation.addSubscription(new subs.SqsSubscription(this.queueValidation));
+
+    new cdk.CfnOutput(this, 'validationQueueArn', {
+      value: this.queueValidation.queueArn,
+      description: 'The arn for the validation queue'
+    });
+
+    new cdk.CfnOutput(this, 'validationTopicArn', {
+      value: this.topicValidation.topicArn,
+      description: 'The arn for the validation topic'
     });
   }
 
@@ -87,6 +105,16 @@ class LambdaApiStack extends cdk.Stack {
       writeCapacity: 1,
       removalPolicy: cdk.RemovalPolicy.DESTROY
     });
+
+    new cdk.CfnOutput(this, 'infractionsTable', {
+      value: this.tblInfractions.tableArn,
+      description: 'The arn for the infractions table'
+    });
+
+    new cdk.CfnOutput(this, 'devicesTable', {
+      value: this.tblDevices.tableArn,
+      description: 'The arn for the devices table'
+    });
   }
 
   /**
@@ -126,8 +154,18 @@ class LambdaApiStack extends cdk.Stack {
     let reportsWallOfShame = reports.addResource('wallofshame');
     reportsWallOfShame.addMethod('GET', new apigw.LambdaIntegration(this.lambdaReportsWallOfShame, { proxy: true }));
 
+    new cdk.CfnOutput(this, 'restApi', {
+      value: api.url,
+      description: 'The API endpoint'
+    });
+
     this.api = api;
   }
+
+  lambdaArns() {
+    return this.lambdaFunctions.map(v => v.functionArn);
+  }
+
 
   /**
    * Create placeholders for the lambda functions.  These will start as 'blank'.
@@ -153,7 +191,8 @@ class LambdaApiStack extends cdk.Stack {
       role: this.lambdaExecutionRole,
       environment: {
         REGION: cdk.Stack.of(this).region,
-        DBTBL_INFRACTIONS: this.tblInfractions.tableName
+        DBTBL_INFRACTIONS: this.tblInfractions.tableName,
+        QUEUE_VALIDATION: this.queueValidation.queueName
       }
     });
 
@@ -185,7 +224,20 @@ class LambdaApiStack extends cdk.Stack {
       role: this.lambdaExecutionRole
     });
 
-    this.lambdaFunctions = [
+    this.lambdaInfractionValidator = new lambda.Function(this, 'LambdaFunction_InfractionValidator', {
+      functionName: this.stageParameter.valueAsString + '_infraction_validator',
+      handler: "index.handler",
+      runtime: lambda.Runtime.NODEJS_14_X,
+      code: this.initialCode,
+      role: this.lambdaExecutionRole
+    });
+
+    this.lambdaInfractionValidator.addEventSource(
+        new SqsEventSource(this.queueValidation, {
+          batchSize: 10
+        }));
+
+    this.apiLambdaFunctions = [
       this.lambdaHelloWorld,
       this.lambdaInfractions,
       this.lambdaInfractionTypes,
@@ -193,7 +245,13 @@ class LambdaApiStack extends cdk.Stack {
       this.lambdaReportsWallOfShame
     ];
 
-    this.lambdaFunctions.forEach(myFunction => myFunction.grantInvoke(new iam.ServicePrincipal('apigateway.amazonaws.com')));
+    this.apiLambdaFunctions.forEach(myFunction => myFunction.grantInvoke(new iam.ServicePrincipal('apigateway.amazonaws.com')));
+
+    this.sqsLambdaFunctions = [
+        this.lambdaInfractionValidator
+    ];
+
+    this.lambdaFunctions = this.apiLambdaFunctions.concat(this.sqsLambdaFunctions);
   }
 
   /**
@@ -220,13 +278,41 @@ class LambdaApiStack extends cdk.Stack {
       statements: [ sqsReadWritePolicyStatement ]
     });
 
+    let snsReadWritePolicyStatement = new PolicyStatement({
+      actions: ["sns:Publish"],
+      resources: [this.topicValidation.topicArn]
+    });
+
+    let snsReadWritePolicy = new iam.ManagedPolicy(this, 'LambdaSNSPolicy', {
+      statements: [ snsReadWritePolicyStatement ]
+    });
+
     let lambdaExecutionRole = new iam.Role(this, 'LambdaExecutionRole', {
       assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
       description: 'Execution role for lambda',
-      managedPolicies: [ dynamoReadWritePolicy, sqsReadWritePolicy ]
+      managedPolicies: [ dynamoReadWritePolicy, snsReadWritePolicy, sqsReadWritePolicy ]
     });
 
     this.lambdaExecutionRole = lambdaExecutionRole;
+  }
+
+  createLambdaDeploymentRole() {
+    let lambdaDeploymentPolicyStatement = new PolicyStatement({
+      actions: ["lambda:*"],
+      resources: this.lambdaArns()
+    });
+
+    let lambdaPolicy = new iam.ManagedPolicy(this, 'LambdaDeploymentPolicy', {
+      statements: [ lambdaDeploymentPolicyStatement ]
+    });
+
+    let lambdaDeploymentRole = new iam.Role(this, 'LambdaDeploymentRole', {
+      assumedBy: new iam.ServicePrincipal('codedeploy.amazonaws.com'),
+      description: 'Role for lambda CodeDeployment',
+      managedPolicies: [ lambdaPolicy ]
+    });
+
+    this.lambdaDeploymentRole = lambdaDeploymentRole;
   }
 }
 
