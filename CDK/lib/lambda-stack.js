@@ -143,6 +143,9 @@ class LambdaApiStack extends cdk.Stack {
 
     let infractionTypes = api.root.addResource('infraction-types');
     infractionTypes.addMethod('GET', new apigw.LambdaIntegration(this.lambdaInfractionTypes, { proxy: false }));
+    
+    let siteQuality = api.root.addResource('site-quality');
+    siteQuality.addMethod('GET', new apigw.LambdaIntegration(this.siteQuality, { proxy: false }));
 
     let devices = api.root.addResource('device');
     devices.addMethod('POST', new apigw.LambdaIntegration(this.lambdaDevices, { proxy: true }));
@@ -198,6 +201,14 @@ class LambdaApiStack extends cdk.Stack {
 
     this.lambdaInfractionTypes = new lambda.Function(this, 'LambdaFunction_InfractionTypes', {
       functionName: this.stageParameter.valueAsString + '_infraction_types',
+      handler: "index.handler",
+      runtime: lambda.Runtime.NODEJS_14_X,
+      code: this.initialCode,
+      role: this.lambdaExecutionRole
+    });
+    
+    this.siteQuality = new lambda.Function(this, 'LambdaFunction_SiteQuality', {
+      functionName: this.stageParameter.valueAsString + '_site_quality',
       handler: "index.handler",
       runtime: lambda.Runtime.NODEJS_14_X,
       code: this.initialCode,
