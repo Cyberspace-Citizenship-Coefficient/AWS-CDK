@@ -6,6 +6,7 @@ const sns = require('@aws-cdk/aws-sns');
 const subs = require('@aws-cdk/aws-sns-subscriptions');
 const iam = require('@aws-cdk/aws-iam');
 const lambda = require('@aws-cdk/aws-lambda');
+const codedeploy = require('@aws-cdk/aws-codedeploy');
 const { SqsEventSource } = require('@aws-cdk/aws-lambda-event-sources');
 const { RestApi, MethodLoggingLevel } = require('@aws-cdk/aws-apigateway');
 const { PolicyStatement } = require('@aws-cdk/aws-iam');
@@ -29,14 +30,19 @@ class LambdaApiStack extends cdk.Stack {
       allowedValues: ['alpha', 'beta', 'gamma', 'prod']
     });
 
-    console.log('stage => ' + this.stageParameter.valueAsString);
-
     this.createDynamoTables();
     this.createQueues();
     this.createLambdaExecutionRole();
     this.createLambdaFunctions();
     this.createLambdaDeploymentRole();
     this.createApi();
+  }
+
+  createDeployment() {
+    this.application = new codedeploy.LambdaApplication(this, 'CodeDeployApplication', {
+      applicationName: 'Cyberspace-Citizenship-Coefficient'
+    });
+
   }
 
   queueArns() {
@@ -69,7 +75,8 @@ class LambdaApiStack extends cdk.Stack {
   dynamoTableArns() {
     return [
       this.tblDevices.tableArn,
-      this.tblInfractions.tableArn
+      this.tblInfractions.tableArn,
+      this.tblScores.tableArn
     ];
   }
 
@@ -106,6 +113,17 @@ class LambdaApiStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY
     });
 
+    this.tblScores = new dynamodb.Table(this, 'DynamoDBScores', {
+      tableName: this.stageParameter.valueAsString + '_scores',
+      partitionKey: {
+        name: 'timeIndex',
+        type: dynamodb.AttributeType.NUMBER
+      },
+      readCapacity: 5,
+      writeCapacity: 5,
+      removalPolicy: cdk.RemovalPolicy.DESTROY
+    });
+
     new cdk.CfnOutput(this, 'infractionsTable', {
       value: this.tblInfractions.tableArn,
       description: 'The arn for the infractions table'
@@ -114,6 +132,11 @@ class LambdaApiStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'devicesTable', {
       value: this.tblDevices.tableArn,
       description: 'The arn for the devices table'
+    });
+
+    new cdk.CfnOutput(this, 'scoresTable', {
+      value: this.tblScores.tableArn,
+      description: 'The arn for the scores table'
     });
   }
 
@@ -124,6 +147,9 @@ class LambdaApiStack extends cdk.Stack {
   createApi() {
     let api = new RestApi(this, 'RestApi', {
       restApiName: this.stageParameter.valueAsString + '_api',
+      defaultCorsPreflightOptions: {
+        allowOrigins: apigw.Cors.ALL_ORIGINS
+      },
       deployOptions: {
         stageName: "prod",
         metricsEnabled: true,
