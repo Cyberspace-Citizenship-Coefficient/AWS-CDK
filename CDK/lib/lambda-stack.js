@@ -76,7 +76,8 @@ class LambdaApiStack extends cdk.Stack {
     return [
       this.tblDevices.tableArn,
       this.tblInfractions.tableArn,
-      this.tblScores.tableArn
+      this.tblScores.tableArn,
+      this.tblSiteQuality.tableArn
     ];
   }
 
@@ -124,6 +125,19 @@ class LambdaApiStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY
     });
 
+
+    this.tblSiteQuality = new dynamodb.Table(this, 'DynamoDBSiteQuality', {
+      tableName: this.stageParameter.valueAsString + '_site_quality',
+      partitionKey: {
+        name: 'site',
+        type: dynamodb.AttributeType.STRING
+      },
+      readCapacity: 5,
+      writeCapacity: 5,
+      removalPolicy: cdk.RemovalPolicy.DESTROY
+    });
+
+
     new cdk.CfnOutput(this, 'infractionsTable', {
       value: this.tblInfractions.tableArn,
       description: 'The arn for the infractions table'
@@ -137,6 +151,11 @@ class LambdaApiStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'scoresTable', {
       value: this.tblScores.tableArn,
       description: 'The arn for the scores table'
+    });
+
+    new cdk.CfnOutput(this, 'siteQualityTable', {
+      value: this.tblSiteQuality.tableArn,
+      description: 'The arn for the site quality table'
     });
   }
 
@@ -171,7 +190,8 @@ class LambdaApiStack extends cdk.Stack {
     infractionTypes.addMethod('GET', new apigw.LambdaIntegration(this.lambdaInfractionTypes, { proxy: false }));
     
     let siteQuality = api.root.addResource('site-quality');
-    siteQuality.addMethod('GET', new apigw.LambdaIntegration(this.siteQuality, { proxy: false }));
+    let siteQualityById = siteQuality.addResource('{id}');
+    siteQualityById.addMethod('GET', new apigw.LambdaIntegration(this.lambdaDevices, { proxy: true }));
 
     let devices = api.root.addResource('device');
     devices.addMethod('POST', new apigw.LambdaIntegration(this.lambdaDevices, { proxy: true }));
@@ -233,7 +253,7 @@ class LambdaApiStack extends cdk.Stack {
       role: this.lambdaExecutionRole
     });
     
-    this.siteQuality = new lambda.Function(this, 'LambdaFunction_SiteQuality', {
+    this.lambdaSiteQuality = new lambda.Function(this, 'LambdaFunction_SiteQuality', {
       functionName: this.stageParameter.valueAsString + '_site_quality',
       handler: "index.handler",
       runtime: lambda.Runtime.NODEJS_14_X,
@@ -279,6 +299,7 @@ class LambdaApiStack extends cdk.Stack {
       this.lambdaInfractions,
       this.lambdaInfractionTypes,
       this.lambdaDevices,
+      this.lambdaSiteQuality,
       this.lambdaReportsWallOfShame
     ];
 
